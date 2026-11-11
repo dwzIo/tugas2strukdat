@@ -1,0 +1,453 @@
+use std::cmp::Ordering;
+use std::io::{self, Write};
+use std::process::Command;
+
+// ===================== QUEUE =====================
+struct NodeQ {
+    nama_pel: String,
+    next: Option<Box<NodeQ>>,
+}
+
+struct Queue {
+    front: Option<Box<NodeQ>>,
+}
+
+impl Queue {
+    fn new() -> Self {
+        Queue { front: None }
+    }
+
+    fn is_empty_q(&self) -> bool {
+        self.front.is_none()
+    }
+
+    fn enqueue(&mut self, nama_pel: String) {
+        let mut cur = &mut self.front;
+        while cur.is_some() {
+            cur = &mut cur.as_mut().unwrap().next;
+        }
+        *cur = Some(Box::new(NodeQ { nama_pel, next: None }));
+    }
+
+    fn enqueue_front(&mut self, nama_pel: String) {
+        let lama = self.front.take();
+        self.front = Some(Box::new(NodeQ { nama_pel, next: lama }));
+    }
+
+    fn dequeue(&mut self) -> String {
+        match self.front.take() {
+            Some(node) => {
+                self.front = node.next;
+                node.nama_pel
+            }
+            None => String::new(),
+        }
+    }
+
+    fn hapus_belakang(&mut self) {
+        match self.front.as_ref() {
+            None => return,
+            Some(n) if n.next.is_none() => {
+                self.front = None;
+                return;
+            }
+            _ => {}
+        }
+        let mut cur = self.front.as_mut().unwrap();
+        while cur.next.as_ref().unwrap().next.is_some() {
+            cur = cur.next.as_mut().unwrap();
+        }
+        cur.next = None;
+    }
+
+    fn clear_queue(&mut self) {
+        while !self.is_empty_q() {
+            self.dequeue();
+        }
+    }
+}
+
+// ===================== PTB (MENU) =====================
+struct Menu {
+    harga: i32,
+    nama_menu: String,
+    kategori: String,
+    tersedia: bool,
+    left: Tree,
+    right: Tree,
+    antrian: Queue,
+}
+
+type Tree = Option<Box<Menu>>;
+
+fn insert_menu(root: &mut Tree, harga: i32, nama: String, kategori: String) -> bool {
+    match root {
+        None => {
+            *root = Some(Box::new(Menu {
+                harga,
+                nama_menu: nama,
+                kategori,
+                tersedia: true,
+                left: None,
+                right: None,
+                antrian: Queue::new(),
+            }));
+            true
+        }
+        Some(node) => match nama.cmp(&node.nama_menu) {
+            Ordering::Less => insert_menu(&mut node.left, harga, nama, kategori),
+            Ordering::Greater => insert_menu(&mut node.right, harga, nama, kategori),
+            Ordering::Equal => false,
+        },
+    }
+}
+
+fn cari_menu<'a>(root: &'a mut Tree, nama: &str) -> Option<&'a mut Menu> {
+    let mut cur = root.as_deref_mut();
+    while let Some(m) = cur {
+        match nama.cmp(m.nama_menu.as_str()) {
+            Ordering::Equal => return Some(m),
+            Ordering::Less => cur = m.left.as_deref_mut(),
+            Ordering::Greater => cur = m.right.as_deref_mut(),
+        }
+    }
+    None
+}
+
+fn inorder(root: &Tree) {
+    if let Some(m) = root {
+        inorder(&m.left);
+        println!("Nama Menu  : {}", m.nama_menu);
+        println!("Kategori   : {}", m.kategori);
+        println!("Harga      : {}", m.harga);
+        println!("Status     : {}\n", if m.tersedia { "Tersedia" } else { "Habis" });
+        inorder(&m.right);
+    }
+}
+
+// mengambil (melepas) node terkecil dari sebuah subtree
+fn ambil_min(tree: &mut Tree) -> Box<Menu> {
+    if tree.as_ref().unwrap().left.is_some() {
+        ambil_min(&mut tree.as_mut().unwrap().left)
+    } else {
+        let mut n = tree.take().unwrap();
+        *tree = n.right.take();
+        n
+    }
+}
+
+fn hapus_menu(root: &mut Tree, nama: &str) -> bool {
+    if root.is_none() {
+        return false;
+    }
+    let urutan = nama.cmp(root.as_ref().unwrap().nama_menu.as_str());
+    match urutan {
+        Ordering::Less => hapus_menu(&mut root.as_mut().unwrap().left, nama),
+        Ordering::Greater => hapus_menu(&mut root.as_mut().unwrap().right, nama),
+        Ordering::Equal => {
+            let mut node = root.take().unwrap();
+            let kiri = node.left.take();
+            let mut kanan = node.right.take();
+            match (kiri, kanan.take()) {
+                (None, r) => *root = r,
+                (l, None) => *root = l,
+                (l, Some(r)) => {
+                    // dua anak: ganti dengan successor (terkecil di subtree kanan)
+                    let mut r = Some(r);
+                    let mut succ = ambil_min(&mut r);
+                    succ.left = l;
+                    succ.right = r;
+                    *root = Some(succ);
+                }
+            }
+            // node lama (beserta antriannya) otomatis dibebaskan di sini
+            true
+        }
+    }
+}
+
+// ===================== STACK (RIWAYAT) =====================
+#[derive(Clone, Copy, PartialEq)]
+enum Jenis {
+    Pesan,
+    Update,
+}
+
+struct PesPel {
+    jenis: Jenis,
+    nama_menu: String,
+    nama_pel: String,
+    menunggu: bool,
+    next: Option<Box<PesPel>>,
+}
+
+struct LinkedStack {
+    top: Option<Box<PesPel>>,
+}
+
+impl LinkedStack {
+    fn buat_riwayat() -> Self {
+        LinkedStack { top: None }
+    }
+
+    fn push(&mut self, jenis: Jenis, nama_menu: &str, nama_pel: &str, menunggu: bool) {
+        let baru = Box::new(PesPel {
+            jenis,
+            nama_menu: nama_menu.to_string(),
+            nama_pel: nama_pel.to_string(),
+            menunggu,
+            next: self.top.take(),
+        });
+        self.top = Some(baru);
+    }
+
+    fn pop(&mut self) -> Option<PesPel> {
+        self.top.take().map(|mut node| {
+            self.top = node.next.take();
+            *node
+        })
+    }
+
+    fn clear_stack(&mut self) {
+        while self.pop().is_some() {}
+    }
+}
+
+// ===================== INPUT / OUTPUT =====================
+fn baca(prompt: &str) -> String {
+    print!("{}", prompt);
+    io::stdout().flush().unwrap();
+    let mut s = String::new();
+    // input habis (EOF): keluar agar program tidak looping selamanya
+    if io::stdin().read_line(&mut s).unwrap_or(0) == 0 {
+        std::process::exit(0);
+    }
+    s.trim_end_matches(&['\r', '\n'][..]).to_string()
+}
+
+fn bersihkan_layar() {
+    #[cfg(windows)]
+    let _ = Command::new("cmd").args(["/C", "cls"]).status();
+    #[cfg(not(windows))]
+    let _ = Command::new("clear").status();
+}
+
+fn jeda() {
+    #[cfg(windows)]
+    let _ = Command::new("cmd").args(["/C", "pause"]).status();
+    #[cfg(not(windows))]
+    {
+        baca("Tekan Enter untuk melanjutkan...");
+    }
+}
+
+// ===================== FITUR =====================
+fn tambah_menu(root: &mut Tree) {
+    let nama = baca("Nama menu : ");
+    let kategori = baca("Kategori  : ");
+    let harga: i32 = match baca("Harga     : ").trim().parse() {
+        Ok(h) => h,
+        Err(_) => {
+            println!("Harga tidak valid");
+            return;
+        }
+    };
+
+    if insert_menu(root, harga, nama, kategori) {
+        println!("Menu berhasil ditambahkan");
+    } else {
+        println!("Menu sudah ada");
+    }
+}
+
+fn lihat_menu(root: &Tree) {
+    if root.is_none() {
+        println!("Daftar menu kosong");
+        return;
+    }
+    inorder(root);
+}
+
+fn pesan_menu(root: &mut Tree, s: &mut LinkedStack) {
+    let pelanggan = baca("Nama pelanggan : ");
+    let nama = baca("Nama menu      : ");
+
+    match cari_menu(root, &nama) {
+        None => println!("Menu tidak ditemukan"),
+        Some(m) => {
+            if m.tersedia {
+                println!("Pesanan {} berhasil dibuat", pelanggan);
+                s.push(Jenis::Pesan, &nama, &pelanggan, false);
+            } else {
+                println!("Menu sedang habis, {} masuk ke dalam waiting list", pelanggan);
+                m.antrian.enqueue(pelanggan.clone());
+                s.push(Jenis::Pesan, &nama, &pelanggan, true);
+            }
+        }
+    }
+}
+
+fn menu_yang_tersedia(root: &mut Tree, s: &mut LinkedStack) {
+    let nama = baca("Nama menu : ");
+
+    match cari_menu(root, &nama) {
+        None => println!("Menu tidak ditemukan"),
+        Some(m) => {
+            if m.tersedia {
+                println!("Menu sudah tersedia");
+                return;
+            }
+
+            m.tersedia = true;
+            println!("Menu tersedia kembali");
+
+            let mut dilayani = String::new();
+            if !m.antrian.is_empty_q() {
+                dilayani = m.antrian.dequeue();
+                println!("Pesanan langsung diberikan kepada {} dari waiting list", dilayani);
+            }
+            s.push(Jenis::Update, &nama, &dilayani, false);
+        }
+    }
+}
+
+fn tandai_menu_habis(root: &mut Tree) {
+    let nama = baca("Nama menu : ");
+
+    match cari_menu(root, &nama) {
+        None => println!("Menu tidak ditemukan"),
+        Some(m) => {
+            m.tersedia = false;
+            println!("Menu {} sekarang habis", nama);
+        }
+    }
+}
+
+fn hapus_menu_input(root: &mut Tree) {
+    let nama = baca("Nama menu yang dihapus : ");
+
+    if hapus_menu(root, &nama) {
+        println!("Menu berhasil dihapus");
+    } else {
+        println!("Menu tidak ditemukan");
+    }
+}
+
+fn undo(root: &mut Tree, s: &mut LinkedStack) {
+    let a = match s.pop() {
+        Some(a) => a,
+        None => {
+            println!("Tidak ada pelanggan untuk di-undo");
+            return;
+        }
+    };
+
+    let m = cari_menu(root, &a.nama_menu);
+
+    if a.jenis == Jenis::Pesan {
+        if let Some(m) = m {
+            if a.menunggu {
+                m.antrian.hapus_belakang();
+            }
+        }
+        println!("Undo: Pesanan menu {} dibatalkan", a.nama_menu);
+    } else {
+        if let Some(m) = m {
+            m.tersedia = false;
+            if !a.nama_pel.is_empty() {
+                m.antrian.enqueue_front(a.nama_pel.clone());
+            }
+        }
+        println!("Undo: Menu {} kembali habis", a.nama_menu);
+    }
+}
+
+fn tampil_antrian(root: &mut Tree) {
+    let nama = baca("Nama menu : ");
+
+    match cari_menu(root, &nama) {
+        Some(m) if !m.antrian.is_empty_q() => {
+            let mut cur = m.antrian.front.as_ref();
+            while let Some(n) = cur {
+                println!("{} menunggu menu {}", n.nama_pel, nama);
+                cur = n.next.as_ref();
+            }
+        }
+        _ => println!("Antrian kosong"),
+    }
+}
+
+// ===================== MAIN =====================
+fn main() {
+    let mut root: Tree = None;
+    let mut riwayat = LinkedStack::buat_riwayat();
+
+    let mut pilih: i32;
+    loop {
+        println!("\n===== Menu Restoran =====");
+        println!("1. Tambah menu");
+        println!("2. Lihat daftar menu");
+        println!("3. Catat pesanan pelanggan");
+        println!("4. Tandai menu");
+        println!("5. Hapus menu");
+        println!("6. Undo pelanggan terakhir");
+        println!("7. Tampilkan antrian pelanggan");
+        println!("0. Keluar");
+        pilih = baca("Pilih : ").trim().parse().unwrap_or(-1);
+        bersihkan_layar();
+
+        match pilih {
+            1 => {
+                tambah_menu(&mut root);
+                jeda();
+                bersihkan_layar();
+            }
+            2 => {
+                lihat_menu(&root);
+                jeda();
+                bersihkan_layar();
+            }
+            3 => {
+                pesan_menu(&mut root, &mut riwayat);
+                jeda();
+                bersihkan_layar();
+            }
+            4 => {
+                let opsi = baca("Tandai tersedia/habis? ");
+                if opsi.trim() == "tersedia" {
+                    menu_yang_tersedia(&mut root, &mut riwayat);
+                } else {
+                    tandai_menu_habis(&mut root);
+                }
+                jeda();
+                bersihkan_layar();
+            }
+            5 => {
+                hapus_menu_input(&mut root);
+                jeda();
+                bersihkan_layar();
+            }
+            6 => {
+                undo(&mut root, &mut riwayat);
+                jeda();
+                bersihkan_layar();
+            }
+            7 => {
+                tampil_antrian(&mut root);
+                jeda();
+                bersihkan_layar();
+            }
+            0 => {
+                println!("Terima kasih!");
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    riwayat.clear_stack();
+    if let Some(m) = root.as_mut() {
+        m.antrian.clear_queue();
+    }
+    // sisa memori (pohon menu) dibebaskan otomatis oleh Rust saat keluar dari main
+}
